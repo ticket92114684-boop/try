@@ -109,7 +109,20 @@ async def login_panel(app):
 
         print("Opening login page...", flush=True)
         await page.goto(LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
+
+        # Cloudflare Bypass Logic
+        try:
+            content = await page.content()
+            if "security verification" in content or "Just a moment..." in content:
+                print("Cloudflare detected on Login! Trying to bypass...", flush=True)
+                cf_iframe = page.frame_locator('iframe[src*="challenges"]')
+                if await cf_iframe.locator('.ctp-checkbox-label').count() > 0:
+                    print("Clicking Cloudflare Checkbox...", flush=True)
+                    await cf_iframe.locator('.ctp-checkbox-label').click(timeout=5000)
+                await asyncio.sleep(10)
+        except Exception as e:
+            print(f"CF Login Bypass error: {e}")
 
         email_filled = False
         for sel in ['input[name="user"]', 'input[name="email"]', 'input[type="text"]']:
@@ -376,7 +389,20 @@ async def check_sms(app, page):
     global seen_messages
     try:
         await page.goto(SMS_URL, timeout=30000, wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
+
+        # Cloudflare Bypass Logic
+        try:
+            content = await page.content()
+            if "security verification" in content or "Just a moment..." in content:
+                print("Cloudflare detected on SMS Page! Trying to bypass...", flush=True)
+                cf_iframe = page.frame_locator('iframe[src*="challenges"]')
+                if await cf_iframe.locator('.ctp-checkbox-label').count() > 0:
+                    print("Clicking Cloudflare Checkbox...", flush=True)
+                    await cf_iframe.locator('.ctp-checkbox-label').click(timeout=5000)
+                await asyncio.sleep(10)
+        except Exception as e:
+            print(f"CF SMS Bypass error: {e}")
 
         page_content = await page.content()
         if "Please enter your login details" in page_content:
@@ -431,7 +457,20 @@ async def check_sms(app, page):
                 # 🔁 Har iteration pe page fresh re-navigate karo (bug fix)
                 if i > 0:
                     await page.goto(SMS_URL, timeout=30000, wait_until="domcontentloaded")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
+
+                    # Cloudflare Bypass Logic
+                    try:
+                        content = await page.content()
+                        if "security verification" in content or "Just a moment..." in content:
+                            print("Cloudflare detected inside loop! Trying to bypass...", flush=True)
+                            cf_iframe = page.frame_locator('iframe[src*="challenges"]')
+                            if await cf_iframe.locator('.ctp-checkbox-label').count() > 0:
+                                print("Clicking Cloudflare Checkbox...", flush=True)
+                                await cf_iframe.locator('.ctp-checkbox-label').click(timeout=5000)
+                            await asyncio.sleep(10)
+                    except Exception as e:
+                        print(f"CF loop Bypass error: {e}")
                     tables = page.locator('table')
                     main_table = None
                     for ti in range(await tables.count()):
