@@ -378,11 +378,20 @@ async def check_sms(app, page):
             print("Session expired - Need re-login", flush=True)
             return False
 
+        # Wait for at least one table to load
+        try:
+            await page.wait_for_selector('table', timeout=15000)
+        except Exception:
+            print("Timeout waiting for any table to load on SMS page.", flush=True)
+
         tables = page.locator('table')
         table_count = await tables.count()
-
+        
         if table_count == 0:
             print("Koi table nahi mila", flush=True)
+            if not getattr(app, "debug_no_table_sent", False):
+                await send_screenshot(page, app, "DEBUG: 'Koi table nahi mila' - Check if login failed or page is empty")
+                app.debug_no_table_sent = True
             return True
 
         main_table = None
