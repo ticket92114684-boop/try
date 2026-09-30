@@ -247,13 +247,12 @@ async def find_and_click_select(details_cell):
         if await form.count() > 0:
             print("  Found form, submitting it...", flush=True)
             try:
-                # Use evaluate to submit immediately without waiting for element actionability checks
-                await form.evaluate("f => f.submit()")
-                await details_cell.page.wait_for_load_state('domcontentloaded', timeout=15000)
+                # Use expect_navigation to wait properly for the page to load
+                async with details_cell.page.expect_navigation(timeout=15000):
+                    await form.evaluate("f => f.submit()")
                 return True
             except Exception as e:
-                # If wait times out but it navigated, we can still proceed
-                print(f"  Form submit note (might be ok): {e}", flush=True)
+                print(f"  Form submit note: {e}", flush=True)
                 return True
 
         element_selectors = ['a', 'button', 'span', 'u', 'div', 'p', '[onclick]', '[href]', '*']
