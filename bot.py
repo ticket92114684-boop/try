@@ -293,15 +293,18 @@ async def send_card(chat_id, app, ph, sender, dt, otp, full_msg, msg_key):
 
         # ---- Image 2 Layout ----
         # Line 1: 🇵🇰 PA | 🟢 +92AT581 #EN
-        line1 = f"{flag} {ccode} | 🟢 {masked} #EN"
+        clean_masked = escape_markdown(masked)
+        line1 = f"{flag} {ccode} \\| 🟢 {clean_masked} \\#EN"
         
-        # Line 2: #️⃣ Prefix: /pre 12345 ❞
+        # Line 2: Sender - OTP (tap to copy)
+        clean_sender = escape_markdown(sender)
         if otp:
-            line2 = f"#️⃣ Prefix: /pre {otp} ❞"
+            clean_otp = escape_markdown(otp)
+            line2 = f"{clean_sender} \\- `{clean_otp}`"
         else:
-            line2 = f"#️⃣ Sender: {sender} ❞"
+            line2 = f"{clean_sender} \\- SMS Received"
 
-        message_text = escape_markdown(f"{line1}\n{line2}")
+        message_text = f"{line1}\n{line2}"
 
         # ---- Store full message for callback button ----
         store_id = str(abs(hash(msg_key)) % 1000000)
@@ -310,20 +313,17 @@ async def send_card(chat_id, app, ph, sender, dt, otp, full_msg, msg_key):
             oldest = next(iter(full_msg_store))
             del full_msg_store[oldest]
 
-        # ---- Inline Buttons (Image 2 layout) ----
-        # Row 1: [🔔 Channel] [🛡️ OTP]
-        # Row 2: [📞 Get Number]
+        # ---- Inline Buttons ----
         otp_display = otp if otp else "SMS"
-        CHANNEL_URL = "https://t.me/your_channel_link" # Placeholder, user can edit
+        CHANNEL_URL = "https://t.me/dolaotp" # User's actual channel link
         
         keyboard = [
             [
                 InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL),
-                InlineKeyboardButton(f"🛡️ {otp_display}", callback_data=f"copy_{store_id}")
+                InlineKeyboardButton(f"🛡️ {otp_display}", callback_data="ignore")
             ],
             [
-                InlineKeyboardButton("📞 Get Number", url=LOGIN_URL),
-                InlineKeyboardButton("📩 Full Msg", callback_data=f"full_{store_id}")
+                InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
