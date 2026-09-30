@@ -385,6 +385,10 @@ async def check_sms(app, page):
         if not main_table:
             main_table = tables.first
             print("Using first table as main table", flush=True)
+            # Send screenshot to see what is going wrong
+            if not getattr(app, "debug_screenshot_sent", False):
+                await send_screenshot(page, app, "DEBUG: Could not find 'Today's SMS Statistics'. Here is what the page looks like.")
+                app.debug_screenshot_sent = True
 
         all_rows = main_table.locator('tr')
         total_rows = await all_rows.count()
