@@ -1,6 +1,7 @@
 import asyncio
 import re
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
@@ -102,6 +103,9 @@ async def login_panel(app):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0"
         )
         page = await ctx.new_page()
+
+        # Stealth lagao taaki Cloudflare block na kare
+        await stealth_async(page)
 
         print("Opening login page...", flush=True)
         await page.goto(LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
@@ -564,4 +568,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 Bot Stopped by User", flush=True)
-
