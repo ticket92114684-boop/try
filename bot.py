@@ -314,13 +314,17 @@ async def send_card(chat_id, app, ph, sender, dt, otp, full_msg, msg_key):
             del full_msg_store[oldest]
 
         # ---- Inline Buttons ----
-        otp_display = otp if otp else "SMS"
         CHANNEL_URL = "https://t.me/dolaotp" # User's actual channel link
         
+        if otp:
+            otp_btn = InlineKeyboardButton(f"🛡️ {otp}", api_kwargs={'copy_text': {'text': str(otp)}})
+        else:
+            otp_btn = InlineKeyboardButton("🛡️ SMS", callback_data="ignore")
+
         keyboard = [
             [
                 InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL),
-                InlineKeyboardButton(f"🛡️ {otp_display}", callback_data="ignore")
+                otp_btn
             ],
             [
                 InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)
