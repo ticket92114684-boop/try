@@ -1,7 +1,7 @@
 import asyncio
 import re
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
@@ -105,7 +105,7 @@ async def login_panel(app):
         page = await ctx.new_page()
 
         # Stealth lagao taaki Cloudflare block na kare
-        await stealth_async(page)
+        await Stealth().apply_stealth_async(page)
 
         print("Opening login page...", flush=True)
         await page.goto(LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
