@@ -287,22 +287,17 @@ async def send_card(chat_id, app, ph, sender, dt, otp, full_msg, msg_key):
         flag, ccode = get_country(ph)
         masked = mask_phone(ph)
 
-        # ---- Compact text (2-3 lines max, image 1 style) ----
-        lines = []
-        # Line 1: flag | country | number | lang tag
-        lines.append(f"{flag} {ccode} | 📱 `{escape_markdown(masked)}` | #EN")
-        # Line 2: time + OTP ek line mein
-        if dt and otp:
-            lines.append(f"⏰ `{escape_markdown(dt)}` | 🔑 `{escape_markdown(otp)}`")
-        elif dt:
-            lines.append(f"⏰ `{escape_markdown(dt)}`")
-        elif otp:
-            lines.append(f"🔑 *OTP*: `{escape_markdown(otp)}`")
-        # Line 3: sender (chhota sa)
-        if sender:
-            lines.append(f"📨 `{escape_markdown(sender[:30])}`")
+        # ---- Image 2 Layout ----
+        # Line 1: 🇵🇰 PA | 🟢 +92AT581 #EN
+        line1 = f"{flag} {ccode} | 🟢 {masked} #EN"
+        
+        # Line 2: #️⃣ Prefix: /pre 12345 ❞
+        if otp:
+            line2 = f"#️⃣ Prefix: /pre {otp} ❞"
+        else:
+            line2 = f"#️⃣ Sender: {sender} ❞"
 
-        message_text = "\n".join(lines)
+        message_text = escape_markdown(f"{line1}\n{line2}")
 
         # ---- Store full message for callback button ----
         store_id = str(abs(hash(msg_key)) % 1000000)
@@ -311,17 +306,20 @@ async def send_card(chat_id, app, ph, sender, dt, otp, full_msg, msg_key):
             oldest = next(iter(full_msg_store))
             del full_msg_store[oldest]
 
-        # ---- Inline Buttons (image 1 layout) ----
-        # Row 1: [🔔 Channel] [📋 OTP_NUMBER]
-        # Row 2: [📩 Full Message] (full width green)
+        # ---- Inline Buttons (Image 2 layout) ----
+        # Row 1: [🔔 Channel] [🛡️ OTP]
+        # Row 2: [📞 Get Number]
         otp_display = otp if otp else "SMS"
+        CHANNEL_URL = "https://t.me/your_channel_link" # Placeholder, user can edit
+        
         keyboard = [
             [
                 InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL),
-                InlineKeyboardButton(f"📋 {otp_display}", callback_data=f"copy_{store_id}"),
+                InlineKeyboardButton(f"🛡️ {otp_display}", callback_data=f"copy_{store_id}")
             ],
             [
-                InlineKeyboardButton("📩 Full Message", callback_data=f"full_{store_id}"),
+                InlineKeyboardButton("📞 Get Number", url=LOGIN_URL),
+                InlineKeyboardButton("📩 Full Msg", callback_data=f"full_{store_id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -566,3 +564,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 Bot Stopped by User", flush=True)
+
