@@ -10,7 +10,7 @@ OTP_CHANNEL_ID  = -1003250473765
 OTP_GROUP_ID    = -1004427004477
 ADMIN_ID        = 8473160748
 PANEL_USER      = "xyz@gmail.com"
-PANEL_PASS      = "Sanju@71"  # ⚠️ NAYA PASSWORD DAAL!
+PANEL_PASS      = "Sanju@71"
 LOGIN_URL       = "https://livestatspanel.com/index.php"
 SMS_URL         = "https://livestatspanel.com/index.php?opt=shw_sms_tod&lang=EN"
 POLL_INTERVAL   = 12
@@ -242,6 +242,20 @@ async def find_and_click_select(details_cell):
         cell_html = await details_cell.inner_html()
         print(f"  Cell HTML: {cell_html[:200]}", flush=True)
 
+        # Check if there's a form inside
+        form = details_cell.locator('form')
+        if await form.count() > 0:
+            print("  Found form, submitting it...", flush=True)
+            try:
+                # Use evaluate to submit immediately without waiting for element actionability checks
+                await form.evaluate("f => f.submit()")
+                await details_cell.page.wait_for_load_state('domcontentloaded', timeout=15000)
+                return True
+            except Exception as e:
+                # If wait times out but it navigated, we can still proceed
+                print(f"  Form submit note (might be ok): {e}", flush=True)
+                return True
+
         element_selectors = ['a', 'button', 'span', 'u', 'div', 'p', '[onclick]', '[href]', '*']
 
         for sel in element_selectors:
@@ -251,7 +265,8 @@ async def find_and_click_select(details_cell):
                     el_text = await el.inner_text()
                     el_tag = await el.evaluate("e => e.tagName")
                     print(f"  Trying {el_tag}: '{el_text.strip()}'", flush=True)
-                    await el.click(timeout=3000)
+                    # Use a longer timeout for click since navigation is slow
+                    await el.click(timeout=15000)
                     print(f"  Clicked successfully!", flush=True)
                     return True
             except Exception as e:
@@ -259,7 +274,7 @@ async def find_and_click_select(details_cell):
                 continue
 
         print(f"  Last resort: clicking cell directly", flush=True)
-        await details_cell.click(timeout=3000)
+        await details_cell.click(timeout=15000)
         return True
 
     except Exception as e:
