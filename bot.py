@@ -10,7 +10,7 @@ OTP_CHANNEL_ID  = -1003250473765
 OTP_GROUP_ID    = -1004427004477
 ADMIN_ID        = 8473160748
 PANEL_USER      = "xyz@gmail.com"
-PANEL_PASS      = "YOUR_NEW_PASSWORD_HERE"  # ⚠️ NAYA PASSWORD DAAL!
+PANEL_PASS      = "Sanju@71"  # ⚠️ NAYA PASSWORD DAAL!
 LOGIN_URL       = "https://livestatspanel.com/index.php"
 SMS_URL         = "https://livestatspanel.com/index.php?opt=shw_sms_tod&lang=EN"
 POLL_INTERVAL   = 12
