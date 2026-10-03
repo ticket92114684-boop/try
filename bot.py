@@ -5,7 +5,7 @@ import re
 import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application
 from playwright.async_api import async_playwright
 
 BOT_TOKEN       = "8885622806:AAEzNbdnJJWd5AGC6pC8LUBcOs2SRzKXlds"
@@ -352,28 +352,6 @@ async def run_bot():
 
         await asyncio.sleep(POLL_INTERVAL)
 
-# ========== COMMANDS ==========
-async def start_cmd(u: Update, c: ContextTypes):
-    await u.message.reply_text(f"✅ Bot chalu hai!\n⏱️ Har {POLL_INTERVAL}s check\n📡 3 channels pe OTP\n🔁 No duplicates\n🔐 Crash recovery ON", parse_mode="Markdown")
-
-async def status_cmd(u: Update, c: ContextTypes):
-    if u.effective_user.id != ADMIN_ID: return
-    await u.message.reply_text(f"✅ Running\n⏱️ {POLL_INTERVAL}s\n🛡️ Crash recovery ON\n📡 3 channels\n🔒 Seen: {len(seen_messages)} msgs", parse_mode="Markdown")
-
-async def restart_cmd(u: Update, c: ContextTypes):
-    if u.effective_user.id != ADMIN_ID: return
-    await u.message.reply_text("🔄 Restarting...")
-    await start_browser()
-    await do_login()
-    await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
-    await u.message.reply_text("✅ Done!")
-
-async def relogin_cmd(u: Update, c: ContextTypes):
-    if u.effective_user.id != ADMIN_ID: return
-    try: os.remove(cookies_file)
-    except: pass
-    await u.message.reply_text("✅ Cookie deleted — auto re-login")
-
 async def main():
     global bot_ref
     if not BOT_TOKEN:
@@ -382,14 +360,10 @@ async def main():
     app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).build()
     bot_ref = app.bot
 
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("restart", restart_cmd))
-    app.add_handler(CommandHandler("relogin", relogin_cmd))
-
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    
+    print("✅ Bot is running in SEND-ONLY mode (Conflict error is impossible now!)", flush=True)
 
     asyncio.create_task(run_bot())
     await asyncio.Event().wait()
