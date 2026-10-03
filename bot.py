@@ -306,13 +306,15 @@ async def run_bot():
                                     message_text = f"{line1}\n{line2}"
 
                                     CHANNEL_URL = "https://t.me/dolaotp"
+                                    GET_NUMBER_URL = "https://t.me/allnumbersfree"
+                                    
                                     if otp and otp != "N/A":
                                         otp_btn = InlineKeyboardButton(f"🛡️ {otp}", api_kwargs={'copy_text': {'text': str(otp)}})
                                     else:
                                         otp_btn = InlineKeyboardButton("🛡️ SMS", callback_data="ignore")
                                     keyboard = [
                                         [InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL), otp_btn],
-                                        [InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)]
+                                        [InlineKeyboardButton("📞 Get Number", url=GET_NUMBER_URL)]
                                     ]
                                     reply_markup = InlineKeyboardMarkup(keyboard)
 
