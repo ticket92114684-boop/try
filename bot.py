@@ -299,9 +299,9 @@ async def run_bot():
                                     clean_sender = escape_markdown(se)
                                     if otp and otp != "N/A":
                                         clean_otp = escape_markdown(otp)
-                                        line2 = f"🔥 {clean_sender} \\- `{clean_otp}`"
+                                        line2 = f"🔥 {clean_sender} \\- `{clean_otp}` ⚡"
                                     else:
-                                        line2 = f"🔥 {clean_sender} \\- SMS Received"
+                                        line2 = f"🔥 {clean_sender} \\- SMS Received ⚡"
 
                                     message_text = f"{line1}\n{line2}"
 
