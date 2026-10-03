@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 from playwright.async_api import async_playwright
 
-BOT_TOKEN       = "8885622806:AAEzNbdnJJWd5AGC6pC8LUBcOs2SRzKXlds" # Updated with new token
+BOT_TOKEN       = "8885622806:AAEzNbdnJJWd5AGC6pC8LUBcOs2SRzKXlds"
 CHANNEL_ID      = os.getenv("CHANNEL_ID", "-1004427004477")
 NEW_CHANNEL_ID  = os.getenv("NEW_CHANNEL_ID", "-1003250473765")
 PRIVATE_CHANNEL_ID = os.getenv("PRIVATE_CHANNEL_ID", "-1003956267456")
@@ -17,10 +17,10 @@ PANEL_USER      = os.getenv("PANEL_USER", "5260101")
 PANEL_PASS      = os.getenv("PANEL_PASS", "Shoaibpanel@123!!!")
 LOGIN_URL       = "https://mysmsportal.com/index.php"
 OTP_SUMMARY_URL = "https://mysmsportal.com/index.php?opt=shw_sts_today"
-POLL_INTERVAL   = int(os.getenv("POLL_INTERVAL", "3"))
+POLL_INTERVAL   = int(os.getenv("POLL_INTERVAL", "2"))
 
 cookies_file = "panel_cookies.json"
-seen_messages = set()
+seen_file = "seen_messages.json"
 bot_ref = None
 last_alert_time = 0
 
@@ -30,7 +30,25 @@ browser = None
 context = None
 page = None
 
-# Premium Format Helpers
+# ========== SEEN MESSAGES — FILE BASED (no duplicates even after restart) ==========
+def load_seen():
+    try:
+        with open(seen_file, 'r') as f:
+            data = json.load(f)
+            return set(data[-500:])  # Last 500 only
+    except:
+        return set()
+
+def save_seen(seen):
+    try:
+        with open(seen_file, 'w') as f:
+            json.dump(list(seen)[-500:], f)
+    except:
+        pass
+
+seen_messages = load_seen()
+
+# ========== PREMIUM FORMAT HELPERS ==========
 def escape_markdown(text):
     escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in escape_chars:
@@ -53,17 +71,25 @@ def get_country(ph):
     return "🌐", "+???"
 
 async def safe_send(bot, chat_id, text, reply_markup=None):
-    for _ in range(3):
-        try:
-            if reply_markup:
-                await bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=reply_markup, read_timeout=15, write_timeout=15)
-            else:
-                await bot.send_message(chat_id, text, parse_mode="Markdown", read_timeout=15, write_timeout=15)
-            return True
-        except Exception as e:
-            print(f"Send err: {e} | TEXT: {repr(text)}")
-            await asyncio.sleep(1)
-    return False
+    """Single attempt — no retries to avoid delay"""
+    try:
+        if reply_markup:
+            await bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=reply_markup, read_timeout=10, write_timeout=10)
+        else:
+            await bot.send_message(chat_id, text, parse_mode="Markdown", read_timeout=10, write_timeout=10)
+        return True
+    except Exception as e:
+        print(f"Send err [{chat_id}]: {e}", flush=True)
+        return False
+
+async def send_to_all_channels(text, reply_markup):
+    """Send to all 3 channels simultaneously — no waiting one by one"""
+    tasks = [
+        safe_send(bot_ref, CHANNEL_ID, text, reply_markup),
+        safe_send(bot_ref, NEW_CHANNEL_ID, text, reply_markup),
+        safe_send(bot_ref, PRIVATE_CHANNEL_ID, text, reply_markup),
+    ]
+    await asyncio.gather(*tasks)
 
 async def admin_alert(bot, text):
     global last_alert_time
@@ -81,79 +107,50 @@ def extract_otp(t):
     m = re.search(r'\b(\d{4,8})\b', t)
     return m.group(1) if m else "N/A"
 
-# ========== BROWSER MANAGEMENT — CRASH RECOVERY ✅ ==========
+# ========== BROWSER MANAGEMENT ==========
 async def start_browser():
-    """Start fresh browser — memory optimized + sandbox disabled"""
     global pw, browser, context, page
-    
-    # Close old if exists
     try:
         if page: await page.close()
         if context: await context.close()
         if browser: await browser.close()
         if pw: await pw.stop()
     except: pass
-    
+
     pw = await async_playwright().start()
-    
     browser = await pw.chromium.launch(
         headless=True,
         args=[
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-extensions',
-            '--disable-default-apps',
-            '--disable-sync',
-            '--disable-translate',
-            '--disable-background-networking',
-            '--disable-background-timer-throttling',
-            '--disable-renderer-backgrounding',
-            '--disable-blink-features=AutomationControlled',
-            '--mute-audio',
-            '--no-first-run',
-            '--no-zygote',
-            '--memory-pressure-off',
-            '--single-process',
-            '--aggressive-cache-discard',
-            '--max_old_space_size=256',
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+            '--disable-gpu', '--disable-software-rasterizer', '--disable-extensions',
+            '--disable-default-apps', '--disable-sync', '--disable-translate',
+            '--disable-background-networking', '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding', '--disable-blink-features=AutomationControlled',
+            '--mute-audio', '--no-first-run', '--no-zygote',
+            '--memory-pressure-off', '--single-process',
+            '--aggressive-cache-discard', '--max_old_space_size=256',
         ]
     )
-    
     context = await browser.new_context(
-        viewport={'width':1024,'height':768},
+        viewport={'width': 1024, 'height': 768},
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-        locale='en-US',
-        device_scale_factor=1,
-        is_mobile=False,
-        has_touch=False,
-        java_script_enabled=True
+        locale='en-US', device_scale_factor=1, is_mobile=False, has_touch=False, java_script_enabled=True
     )
-    
-    # Anti-detect
     await context.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
         Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         window.chrome = {runtime: {}};
     """)
-    
-    # Block images + CSS to save memory ⚡
-    await context.route("**/*", lambda route: 
+    await context.route("**/*", lambda route:
         route.abort() if route.request.resource_type in ['image', 'stylesheet', 'font', 'media'] else route.continue_()
     )
-    
     page = await context.new_page()
-    
-    # Load cookies
     try:
         with open(cookies_file) as f:
             await context.add_cookies(json.load(f))
     except: pass
-    
-    print("🌐 New browser started (memory optimized)", flush=True)
+    print("🌐 Browser started", flush=True)
 
 async def save_cookies():
     try:
@@ -165,23 +162,15 @@ async def do_login():
     try:
         print("🔐 Logging in...", flush=True)
         await page.goto(LOGIN_URL, timeout=25000, wait_until='domcontentloaded')
-        await asyncio.sleep(1.2)
-        
+        await asyncio.sleep(0.8)
         u = page.locator('input[type="text"]').first
-        await u.click()
+        await u.click(); await u.fill(PANEL_USER)
         await asyncio.sleep(0.2)
-        await u.fill(PANEL_USER)
-        await asyncio.sleep(0.3)
-        
         p = page.locator('input[type="password"]').first
-        await p.click()
+        await p.click(); await p.fill(PANEL_PASS)
         await asyncio.sleep(0.2)
-        await p.fill(PANEL_PASS)
-        await asyncio.sleep(0.3)
-        
         await page.locator('button, input[type="submit"]').first.click()
-        await asyncio.sleep(2)
-        
+        await asyncio.sleep(1.5)
         await save_cookies()
         print("✅ Login OK", flush=True)
         return True
@@ -189,81 +178,73 @@ async def do_login():
         print(f"❌ Login failed: {e}", flush=True)
         return False
 
-async def check_login():
-    """Returns: True=logged_in, False=need_login, None=page_crashed"""
-    try:
-        await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
-        await asyncio.sleep(0.6)
-        content = await page.content()
-        if 'Please enter your login details' in content:
-            return False
-        return True
-    except Exception as e:
-        if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
-            return None  # Page crashed — need full restart
-        return False
-
-# ========== MAIN POLL — CRASH SAFE ✅ ==========
+# ========== ULTRA FAST POLL LOOP ✅ ==========
 async def run_bot():
     global seen_messages
-    
+
     await start_browser()
-    
-    # Initial login
-    status = await check_login()
-    if status == False:
+
+    # Initial login check
+    try:
+        await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+        await asyncio.sleep(0.5)
+        content = await page.content()
+        if 'Please enter your login details' in content:
+            await do_login()
+            await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+    except:
         await do_login()
-    elif status is None:
-        await start_browser()
-        await do_login()
-    
+        await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+
     print(f"✅ BOT ONLINE — Har {POLL_INTERVAL}s check ⚡", flush=True)
     await safe_send(bot_ref, ADMIN_ID, f"✅ Bot chalu — har {POLL_INTERVAL}s mein check karega!")
-    
+
     err_count = 0
     crash_count = 0
-    
+    first_run = True  # Pehli baar sirf scan karo, send mat karo (restart duplicate fix)
+
     while True:
         try:
-            # Check if page is alive
+            # ⚡ FAST: page.reload() instead of full goto() — 2x faster
             try:
-                await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
-                await asyncio.sleep(0.2)
+                if first_run:
+                    pass  # Already on the page from login
+                else:
+                    await page.reload(timeout=15000, wait_until='domcontentloaded')
             except Exception as e:
                 if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
                     crash_count += 1
-                    print(f"💥 Page crashed ({crash_count}) — restarting browser...", flush=True)
+                    print(f"💥 Crash ({crash_count}) — restart...", flush=True)
                     await start_browser()
                     await do_login()
+                    await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
                     if crash_count >= 3:
-                        await admin_alert(bot_ref, f"⚠️ Browser baar-baar crash ho raha ({crash_count} baar) — recover ho raha hai")
+                        await admin_alert(bot_ref, f"⚠️ Browser crash ({crash_count}x)")
                         crash_count = 0
-                    await asyncio.sleep(5)
                     continue
                 raise
-            
-            crash_count = 0  # Reset — sab theek hai
-            
+
+            crash_count = 0
+
             content = await page.content()
             if 'Please enter your login details' in content:
                 print("🔄 Session expired — re-login", flush=True)
-                ok = await do_login()
-                if not ok:
-                    await asyncio.sleep(5)
+                if not await do_login():
+                    await asyncio.sleep(3)
                     continue
                 await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
-                await asyncio.sleep(0.5)
 
             rows = page.locator('table tbody tr')
             total = await rows.count()
-            print(f"📊 Check: {total} rows", flush=True)
+            print(f"📊 {total} rows", flush=True)
 
             for i in range(total):
                 row = rows.nth(i)
                 cols = row.locator('td')
-                if await cols.count() < 5: continue
-                num = (await cols.nth(0).inner_text()).strip()
+                if await cols.count() < 5:
+                    continue
 
+                # Click into detail page
                 form = row.locator('form').first
                 clicked = False
                 if await form.count() > 0:
@@ -279,8 +260,8 @@ async def run_bot():
 
                 try:
                     await page.wait_for_load_state('domcontentloaded', timeout=8000)
-                    await asyncio.sleep(0.3)
                     detail_rows = page.locator('table tbody tr')
+                    new_count = 0
                     for j in range(await detail_rows.count()):
                         dcols = detail_rows.nth(j).locator('td')
                         if await dcols.count() >= 5:
@@ -289,109 +270,114 @@ async def run_bot():
                             se = (await dcols.nth(2).inner_text()).strip()
                             ms = (await dcols.nth(-1).inner_text()).strip()
                             if ms and len(ms) > 3 and dt:
-                                key = f"{dt}|{ph}|{ms[:40]}"
+                                key = f"{dt}|{ph}|{ms[:50]}"
                                 if key not in seen_messages:
                                     seen_messages.add(key)
+
+                                    if first_run:
+                                        # Pehli baar sirf mark karo, send NAHI (restart pe duplicate fix)
+                                        continue
+
+                                    new_count += 1
                                     otp = extract_otp(ms)
                                     masked = mask(ph)
-                                    
-                                    # ----- PREMIUM FORMAT APLIYED -----
+
+                                    # Premium Format
                                     flag, ccode = get_country(ph)
                                     clean_masked = escape_markdown(masked)
                                     clean_ccode = escape_markdown(ccode)
                                     line1 = f"{flag} {clean_ccode} \\| 🟢 {clean_masked} \\#EN"
-                                    
+
                                     clean_sender = escape_markdown(se)
                                     if otp and otp != "N/A":
                                         clean_otp = escape_markdown(otp)
                                         line2 = f"🔥 {clean_sender} \\- `{clean_otp}`"
                                     else:
                                         line2 = f"🔥 {clean_sender} \\- SMS Received"
-                                        
+
                                     message_text = f"{line1}\n{line2}"
-                                    
+
                                     CHANNEL_URL = "https://t.me/dolaotp"
                                     if otp and otp != "N/A":
                                         otp_btn = InlineKeyboardButton(f"🛡️ {otp}", api_kwargs={'copy_text': {'text': str(otp)}})
                                     else:
                                         otp_btn = InlineKeyboardButton("🛡️ SMS", callback_data="ignore")
-
                                     keyboard = [
-                                        [
-                                            InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL),
-                                            otp_btn
-                                        ],
-                                        [
-                                            InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)
-                                        ]
+                                        [InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL), otp_btn],
+                                        [InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)]
                                     ]
                                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                                    await safe_send(bot_ref, CHANNEL_ID, message_text, reply_markup)
-                                    await safe_send(bot_ref, NEW_CHANNEL_ID, message_text, reply_markup)
-                                    await safe_send(bot_ref, PRIVATE_CHANNEL_ID, message_text, reply_markup)
+                                    # ⚡ Send to ALL channels at once (parallel — no waiting)
+                                    await send_to_all_channels(message_text, reply_markup)
                                     print(f"✅ SENT: {masked} | {otp}", flush=True)
-                                    # ----------------------------------
+
+                    if new_count > 0:
+                        save_seen(seen_messages)  # Save to file after new messages
+
+                    # Go back to summary for next row
                     await page.go_back()
                     await page.wait_for_load_state('domcontentloaded', timeout=8000)
-                    await asyncio.sleep(0.1)
                 except Exception as e:
                     print(f"Detail err: {e}", flush=True)
                     try: await page.goto(OTP_SUMMARY_URL, timeout=15000, wait_until='domcontentloaded')
                     except: pass
 
-            import random
-            if random.random() < 0.15:
-                await save_cookies()
+            if first_run:
+                first_run = False
+                save_seen(seen_messages)
+                print(f"🔒 First scan done — {len(seen_messages)} old messages marked (no duplicates now)", flush=True)
 
-            if len(seen_messages) > 500:
-                seen_messages = set(list(seen_messages)[-250:])
+            # Trim memory
+            if len(seen_messages) > 800:
+                seen_messages = set(list(seen_messages)[-500:])
+
             err_count = 0
 
         except Exception as e:
             err_count += 1
             print(f"Poll err ({err_count}/5): {e}", flush=True)
-            
             if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
-                print("💥 Crash detected — full browser restart", flush=True)
                 await start_browser()
                 await do_login()
-            
+                try: await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+                except: pass
             if err_count >= 5:
-                await admin_alert(bot_ref, "⚠️ Network issues — recover ho raha hai")
+                await admin_alert(bot_ref, "⚠️ Errors — recovering...")
                 err_count = 0
-                try:
-                    await start_browser()
-                    await do_login()
+                await start_browser()
+                await do_login()
+                try: await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
                 except: pass
 
         await asyncio.sleep(POLL_INTERVAL)
 
 # ========== COMMANDS ==========
 async def start_cmd(u: Update, c: ContextTypes):
-    await u.message.reply_text(f"✅ Bot chalu hai!\n⏱️ Har {POLL_INTERVAL}s check\n📡 Dono channels pe OTP\n🔁 Repeat nahi hoga\n🔐 Crash auto-recovery ON", parse_mode="Markdown")
+    await u.message.reply_text(f"✅ Bot chalu hai!\n⏱️ Har {POLL_INTERVAL}s check\n📡 3 channels pe OTP\n🔁 No duplicates\n🔐 Crash recovery ON", parse_mode="Markdown")
 
 async def status_cmd(u: Update, c: ContextTypes):
     if u.effective_user.id != ADMIN_ID: return
-    await u.message.reply_text(f"✅ Bot Running\n⏱️ Check: {POLL_INTERVAL}s\n🛡️ Crash recovery: ON\n📡 Channels: 2 active\n🖼️ Images blocked (memory save)", parse_mode="Markdown")
+    await u.message.reply_text(f"✅ Running\n⏱️ {POLL_INTERVAL}s\n🛡️ Crash recovery ON\n📡 3 channels\n🔒 Seen: {len(seen_messages)} msgs", parse_mode="Markdown")
 
 async def restart_cmd(u: Update, c: ContextTypes):
     if u.effective_user.id != ADMIN_ID: return
-    await u.message.reply_text("🔄 Browser restart ho raha hai...")
+    await u.message.reply_text("🔄 Restarting...")
     await start_browser()
     await do_login()
-    await u.message.reply_text("✅ Browser restart + login done!")
+    await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+    await u.message.reply_text("✅ Done!")
 
 async def relogin_cmd(u: Update, c: ContextTypes):
     if u.effective_user.id != ADMIN_ID: return
     try: os.remove(cookies_file)
     except: pass
-    await u.message.reply_text("✅ Cookie delete — auto re-login hoga")
+    await u.message.reply_text("✅ Cookie deleted — auto re-login")
 
 async def main():
     global bot_ref
-    if not BOT_TOKEN or BOT_TOKEN == "TUMHARA_NAYA_TOKEN_YAHAN_DAALO":
-        print("❌ BOT_TOKEN missing ya change nahi kiya!", flush=True); return
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN missing!", flush=True); return
 
     app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).build()
     bot_ref = app.bot
@@ -406,7 +392,6 @@ async def main():
     await app.updater.start_polling(drop_pending_updates=True)
 
     asyncio.create_task(run_bot())
-
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
