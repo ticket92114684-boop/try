@@ -1,613 +1,414 @@
 import asyncio
+import json
+import os
 import re
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+import time
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, ContextTypes
+from playwright.async_api import async_playwright
 
-# ========== CONFIG ==========
-BOT_TOKEN       = "8639806583:AAHBP81e5g8Luf7jhJRwi1-t8hM7VKnn5AU"
-OTP_CHANNEL_ID  = -1003250473765
-OTP_GROUP_ID    = -1004427004477
-ADMIN_ID        = 8473160748
-PANEL_USER      = "xyz@gmail.com"
-PANEL_PASS      = "Sanju@71"
-LOGIN_URL       = "https://livestatspanel.com/index.php"
-SMS_URL         = "https://livestatspanel.com/index.php?opt=shw_sms_tod&lang=EN"
-POLL_INTERVAL   = 12
+BOT_TOKEN       = "8885622806:AAEzNbdnJJWd5AGC6pC8LUBcOs2SRzKXlds" # Updated with new token
+CHANNEL_ID      = os.getenv("CHANNEL_ID", "-1004427004477")
+NEW_CHANNEL_ID  = os.getenv("NEW_CHANNEL_ID", "-1003250473765")
+PRIVATE_CHANNEL_ID = os.getenv("PRIVATE_CHANNEL_ID", "-1003956267456")
+ADMIN_ID        = int(os.getenv("ADMIN_ID", "8473160748"))
+PANEL_USER      = os.getenv("PANEL_USER", "5260101")
+PANEL_PASS      = os.getenv("PANEL_PASS", "Shoaibpanel@123!!!")
+LOGIN_URL       = "https://mysmsportal.com/index.php"
+OTP_SUMMARY_URL = "https://mysmsportal.com/index.php?opt=shw_sts_today"
+POLL_INTERVAL   = int(os.getenv("POLL_INTERVAL", "3"))
 
-# 🔗 Inline button ke liye — apna channel username daal yahan
-CHANNEL_URL     = "https://t.me/dolaotp"
-
+cookies_file = "panel_cookies.json"
 seen_messages = set()
-full_msg_store = {}  # callback button ke liye full message store
+bot_ref = None
+last_alert_time = 0
 
-# ========== COUNTRY FLAG DETECT ==========
-import phonenumbers
-from phonenumbers.phonenumberutil import region_code_for_number
+# Browser state
+pw = None
+browser = None
+context = None
+page = None
 
-def get_country(phone):
-    fallback = ('🌍', 'XX')
-    digits = re.sub(r'\D', '', phone)
-    if not digits:
-        return fallback
-        
-    # Prepend '+' so phonenumbers can parse it as international format
-    phone_with_plus = '+' + digits
-
-    try:
-        parsed = phonenumbers.parse(phone_with_plus)
-        region = region_code_for_number(parsed)
-        if region and len(region) == 2:
-            # Generate flag emoji from ISO 2-letter region code
-            flag = chr(ord(region[0]) + 127397) + chr(ord(region[1]) + 127397)
-            return (flag, region)
-    except Exception:
-        pass
-    
-    return fallback
-
-# ========== UTILS ==========
-async def send_screenshot(page, app, caption="Screenshot"):
-    try:
-        screenshot = await page.screenshot(type="jpeg", quality=80, full_page=True)
-        await app.bot.send_photo(chat_id=ADMIN_ID, photo=screenshot, caption=caption)
-        return True
-    except Exception as e:
-        print(f"Screenshot failed: {e}", flush=True)
-        return False
-
-def extract_otp(text):
-    m = re.search(r'\b(\d{4,6})\b', text)
-    if m:
-        return m.group(1)
-    m = re.search(r'(?:OTP|code|pin|password|key|verification)[^\dA-Z]*([A-Z0-9]{4,8})', text, re.I)
-    if m:
-        return m.group(1)
-    return None
-
-def mask_phone(text):
-    digits = re.sub(r'\D', '', text)
-    if len(digits) <= 8:
-        return digits
-    return f"{digits[:4]}**{digits[-4:]}"
-
-def clean_text(text):
-    return re.sub(r'\s+', ' ', text).strip()
-
-def is_valid_phone(text):
-    digits = re.sub(r'\D', '', text)
-    return len(digits) >= 10
-
-def is_header_row(phone_text):
-    header_keywords = ['NUMBER', 'Number', 'number', 'PHONE', 'Phone', 'phone']
-    return any(keyword in phone_text for keyword in header_keywords)
-
+# Premium Format Helpers
 def escape_markdown(text):
     escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in escape_chars:
-        text = text.replace(char, f'\\{char}')
+        text = str(text).replace(char, f'\\{char}')
     return text
 
-# ========== LOGIN ==========
-async def login_panel(app):
-    pw = browser = ctx = page = None
+def region_to_flag(region):
+    return "".join(chr(127397 + ord(c)) for c in region.upper())
+
+def get_country(ph):
     try:
-        print("Starting browser...", flush=True)
-        pw = await async_playwright().start()
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-        )
-        ctx = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0"
-        )
-        page = await ctx.new_page()
+        import phonenumbers
+        p = phonenumbers.parse("+" + str(ph).lstrip("+"))
+        cc = "+" + str(p.country_code)
+        region = phonenumbers.region_code_for_number(p)
+        if region:
+            return region_to_flag(region), cc
+    except:
+        pass
+    return "🌐", "+???"
 
-        # Stealth lagao taaki Cloudflare block na kare
-        await Stealth().apply_stealth_async(page)
-
-        print("Opening login page...", flush=True)
-        await page.goto(LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
-        await asyncio.sleep(3)
-
-        # Cloudflare Bypass Logic
+async def safe_send(bot, chat_id, text, reply_markup=None):
+    for _ in range(3):
         try:
-            content = await page.content()
-            if "security verification" in content or "Just a moment..." in content:
-                print("Cloudflare detected on Login! Trying to bypass...", flush=True)
-                cf_iframe = page.frame_locator('iframe[src*="challenges"]')
-                if await cf_iframe.locator('.ctp-checkbox-label').count() > 0:
-                    print("Clicking Cloudflare Checkbox...", flush=True)
-                    await cf_iframe.locator('.ctp-checkbox-label').click(timeout=5000)
-                await asyncio.sleep(10)
+            if reply_markup:
+                await bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=reply_markup, read_timeout=15, write_timeout=15)
+            else:
+                await bot.send_message(chat_id, text, parse_mode="Markdown", read_timeout=15, write_timeout=15)
+            return True
         except Exception as e:
-            print(f"CF Login Bypass error: {e}")
+            print(f"Send err: {e} | TEXT: {repr(text)}")
+            await asyncio.sleep(1)
+    return False
 
-        email_filled = False
-        for sel in ['input[name="user"]', 'input[name="email"]', 'input[type="text"]']:
-            try:
-                loc = page.locator(sel)
-                if await loc.count() > 0:
-                    await loc.click(timeout=3000)
-                    await loc.fill(PANEL_USER, timeout=3000)
-                    print(f"Username filled: {sel}", flush=True)
-                    email_filled = True
-                    break
-            except Exception:
-                continue
+async def admin_alert(bot, text):
+    global last_alert_time
+    now = time.time()
+    if now - last_alert_time < 3600:
+        return
+    last_alert_time = now
+    await safe_send(bot, ADMIN_ID, text)
 
-        if not email_filled:
-            await send_screenshot(page, app, "Username field not found!")
-            await cleanup_resources_direct(pw, browser, ctx, page)
-            return False, None
+def mask(p):
+    p = p.strip()
+    return p if len(p) <= 6 else f"{p[:4]}*****{p[-3:]}"
 
-        await asyncio.sleep(0.5)
+def extract_otp(t):
+    m = re.search(r'\b(\d{4,8})\b', t)
+    return m.group(1) if m else "N/A"
 
-        try:
-            pass_input = page.locator('input[type="password"]')
-            await pass_input.click(timeout=5000)
-            await pass_input.fill(PANEL_PASS, timeout=5000)
-            print("Password filled", flush=True)
-        except Exception as e:
-            await send_screenshot(page, app, f"Password field error: {e}")
-            await cleanup_resources_direct(pw, browser, ctx, page)
-            return False, None
-
-        await asyncio.sleep(0.5)
-
-        submitted = False
-        btn_selectors = [
-            'button[type="submit"]', 'input[type="submit"]',
-            'input[value*="Login"]', 'button:has-text("Login")',
-            'form button'
-        ]
-        for sel in btn_selectors:
-            try:
-                loc = page.locator(sel)
-                if await loc.count() > 0:
-                    await loc.click(timeout=5000)
-                    submitted = True
-                    break
-            except Exception:
-                continue
-
-        if not submitted:
-            print("Using form.submit()", flush=True)
-            await page.evaluate("document.querySelector('form')?.submit()")
-
-        await asyncio.sleep(3)
-
-        page_content = await page.content()
-        if "Please enter your login details" not in page_content:
-            print("LOGIN SUCCESSFUL!", flush=True)
-            return True, page
-        else:
-            await send_screenshot(page, app, "LOGIN FAILED - Still on login page")
-            print("Login failed - check credentials", flush=True)
-            await cleanup_resources_direct(pw, browser, ctx, page)
-            return False, None
-
-    except Exception as e:
-        print(f"Login error: {e}", flush=True)
-        await cleanup_resources_direct(pw, browser, ctx, page)
-        return False, None
-
-async def cleanup_resources_direct(pw, browser, ctx, page):
+# ========== BROWSER MANAGEMENT — CRASH RECOVERY ✅ ==========
+async def start_browser():
+    """Start fresh browser — memory optimized + sandbox disabled"""
+    global pw, browser, context, page
+    
+    # Close old if exists
     try:
         if page: await page.close()
-        if ctx: await ctx.close()
+        if context: await context.close()
         if browser: await browser.close()
         if pw: await pw.stop()
-    except Exception as e:
-        print(f"Cleanup note: {e}", flush=True)
-
-async def cleanup_resources(page):
-    try:
-        if page:
-            ctx = page.context
-            browser = ctx.browser
-            await page.close()
-            await ctx.close()
-            await browser.close()
-    except Exception as e:
-        print(f"Cleanup note: {e}", flush=True)
-
-# ========== SMS DETAILS EXTRACT ==========
-async def get_sms_details(page):
-    try:
-        await asyncio.sleep(1.5)
-
-        tables = page.locator('table')
-        table_count = await tables.count()
-
-        if table_count < 2:
-            print("Details table nahi mila", flush=True)
-            return None, None
-
-        details_table = tables.first
-        all_rows = details_table.locator('tr')
-        all_row_count = await all_rows.count()
-
-        if all_row_count < 2:
-            print("Details table mein data nahi hai", flush=True)
-            return None, None
-
-        data_row = all_rows.nth(1)
-        cells = data_row.locator('td')
-        cell_count = await cells.count()
-
-        if cell_count < 5:
-            print(f"Details row mein kam cells: {cell_count}", flush=True)
-            return None, None
-
-        dt = clean_text(await cells.nth(0).inner_text())
-        msg_body = clean_text(await cells.nth(4).inner_text())
-
-        print(f"Date: {dt}", flush=True)
-        print(f"Message: {msg_body[:120]}...", flush=True)
-
-        return dt, msg_body
-
-    except Exception as e:
-        print(f"SMS details error: {e}", flush=True)
-        return None, None
-
-# ========== CLICKABLE ELEMENT FIND ==========
-async def find_and_click_select(details_cell):
-    try:
-        cell_html = await details_cell.inner_html()
-        print(f"  Cell HTML: {cell_html[:200]}", flush=True)
-
-        # Check if there's a form inside
-        form = details_cell.locator('form')
-        if await form.count() > 0:
-            print("  Found form, submitting it...", flush=True)
-            try:
-                # Use expect_navigation to wait properly for the page to load
-                async with details_cell.page.expect_navigation(timeout=15000):
-                    await form.evaluate("f => f.submit()")
-                return True
-            except Exception as e:
-                print(f"  Form submit note: {e}", flush=True)
-                return True
-
-        element_selectors = ['a', 'button', 'span', 'u', 'div', 'p', '[onclick]', '[href]', '*']
-
-        for sel in element_selectors:
-            try:
-                el = details_cell.locator(sel).first
-                if await el.count() > 0 and await el.is_visible():
-                    el_text = await el.inner_text()
-                    el_tag = await el.evaluate("e => e.tagName")
-                    print(f"  Trying {el_tag}: '{el_text.strip()}'", flush=True)
-                    # Use a longer timeout for click since navigation is slow
-                    await el.click(timeout=15000)
-                    print(f"  Clicked successfully!", flush=True)
-                    return True
-            except Exception as e:
-                print(f"  {sel} failed: {str(e)[:80]}", flush=True)
-                continue
-
-        print(f"  Last resort: clicking cell directly", flush=True)
-        await details_cell.click(timeout=15000)
-        return True
-
-    except Exception as e:
-        print(f"  Find/click error: {e}", flush=True)
-        return False
-
-# ========== SEND COMPACT CARD MESSAGE (IMAGE 1 STYLE) ==========
-async def send_card(chat_id, app, ph, sender, dt, otp, full_msg, msg_key):
-    """Image 1 jaisa compact card with inline buttons bhejo"""
-    try:
-        flag, ccode = get_country(ph)
-        masked = mask_phone(ph)
-
-        # ---- Image 2 Layout ----
-        # Line 1: 🇵🇰 PA | 🟢 +92AT581 #EN
-        clean_masked = escape_markdown(masked)
-        line1 = f"{flag} {ccode} \\| 🟢 {clean_masked} \\#EN"
-        
-        # Line 2: Sender - OTP (tap to copy)
-        clean_sender = escape_markdown(sender)
-        if otp:
-            clean_otp = escape_markdown(otp)
-            line2 = f"{clean_sender} \\- `{clean_otp}`"
-        else:
-            line2 = f"{clean_sender} \\- SMS Received"
-
-        message_text = f"{line1}\n{line2}"
-
-        # ---- Store full message for callback button ----
-        store_id = str(abs(hash(msg_key)) % 1000000)
-        full_msg_store[store_id] = full_msg
-        if len(full_msg_store) > 200:
-            oldest = next(iter(full_msg_store))
-            del full_msg_store[oldest]
-
-        # ---- Inline Buttons ----
-        CHANNEL_URL = "https://t.me/dolaotp" # User's actual channel link
-        
-        if otp:
-            otp_btn = InlineKeyboardButton(f"🛡️ {otp}", api_kwargs={'copy_text': {'text': str(otp)}})
-        else:
-            otp_btn = InlineKeyboardButton("🛡️ SMS", callback_data="ignore")
-
-        keyboard = [
-            [
-                InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL),
-                otp_btn
-            ],
-            [
-                InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)
-            ]
+    except: pass
+    
+    pw = await async_playwright().start()
+    
+    browser = await pw.chromium.launch(
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding',
+            '--disable-blink-features=AutomationControlled',
+            '--mute-audio',
+            '--no-first-run',
+            '--no-zygote',
+            '--memory-pressure-off',
+            '--single-process',
+            '--aggressive-cache-discard',
+            '--max_old_space_size=256',
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode="MarkdownV2",
-            reply_markup=reply_markup
-        )
-        return True
-
-    except Exception as e:
-        print(f"Card send fail to {chat_id}: {e}", flush=True)
-        # Fallback: simple text
-        try:
-            await app.bot.send_message(chat_id=chat_id, text=f"New SMS: {full_msg[:200]}")
-            return True
-        except Exception as e2:
-            print(f"Fallback bhi fail: {e2}", flush=True)
-            return False
-
-# ========== BUTTON CALLBACK HANDLER ==========
-async def button_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()  # loading spinner hatao
-    data = query.data
-
-    if data.startswith("full_"):
-        store_id = data[5:]
-        full_msg = full_msg_store.get(store_id, "Message expired (purana ho gaya)")
-        # Popup alert mein full message dikhao
-        await query.answer(text=full_msg[:190], show_alert=True)
-
-    elif data.startswith("copy_"):
-        store_id = data[5:]
-        full_msg = full_msg_store.get(store_id, "")
-        otp = extract_otp(full_msg)
-        if otp:
-            await query.answer(text=f"OTP: {otp} (long press to copy)", show_alert=False)
-        else:
-            await query.answer(text="OTP nahi mila is message mein", show_alert=True)
-
-# ========== CHECK SMS ==========
-async def check_sms(app, page):
-    global seen_messages
+    )
+    
+    context = await browser.new_context(
+        viewport={'width':1024,'height':768},
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        locale='en-US',
+        device_scale_factor=1,
+        is_mobile=False,
+        has_touch=False,
+        java_script_enabled=True
+    )
+    
+    # Anti-detect
+    await context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+        window.chrome = {runtime: {}};
+    """)
+    
+    # Block images + CSS to save memory ⚡
+    await context.route("**/*", lambda route: 
+        route.abort() if route.request.resource_type in ['image', 'stylesheet', 'font', 'media'] else route.continue_()
+    )
+    
+    page = await context.new_page()
+    
+    # Load cookies
     try:
-        await page.goto(SMS_URL, timeout=30000, wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+        with open(cookies_file) as f:
+            await context.add_cookies(json.load(f))
+    except: pass
+    
+    print("🌐 New browser started (memory optimized)", flush=True)
 
-        # Cloudflare Bypass Logic
-        try:
-            content = await page.content()
-            if "security verification" in content or "Just a moment..." in content:
-                print("Cloudflare detected on SMS Page! Trying to bypass...", flush=True)
-                cf_iframe = page.frame_locator('iframe[src*="challenges"]')
-                if await cf_iframe.locator('.ctp-checkbox-label').count() > 0:
-                    print("Clicking Cloudflare Checkbox...", flush=True)
-                    await cf_iframe.locator('.ctp-checkbox-label').click(timeout=5000)
-                await asyncio.sleep(10)
-        except Exception as e:
-            print(f"CF SMS Bypass error: {e}")
+async def save_cookies():
+    try:
+        with open(cookies_file, 'w') as f:
+            json.dump(await context.cookies(), f)
+    except: pass
 
-        page_content = await page.content()
-        if "Please enter your login details" in page_content:
-            print("Session expired - Need re-login", flush=True)
-            return False
-
-        # Wait for at least one table to load
-        try:
-            await page.wait_for_selector('table', timeout=15000)
-        except Exception:
-            print("Timeout waiting for any table to load on SMS page.", flush=True)
-
-        tables = page.locator('table')
-        table_count = await tables.count()
+async def do_login():
+    try:
+        print("🔐 Logging in...", flush=True)
+        await page.goto(LOGIN_URL, timeout=25000, wait_until='domcontentloaded')
+        await asyncio.sleep(1.2)
         
-        if table_count == 0:
-            print("Koi table nahi mila", flush=True)
-            if not getattr(app, "debug_no_table_sent", False):
-                await send_screenshot(page, app, "DEBUG: 'Koi table nahi mila' - Check if login failed or page is empty")
-                app.debug_no_table_sent = True
-            return True
-
-        main_table = None
-        for i in range(table_count):
-            tbl = tables.nth(i)
-            try:
-                tbl_text = await tbl.inner_text()
-                if "Today's SMS Statistics" in tbl_text:
-                    main_table = tbl
-                    print(f"Main table found at index {i}", flush=True)
-                    break
-            except Exception:
-                continue
-
-        if not main_table:
-            main_table = tables.first
-            print("Using first table as main table", flush=True)
-            # Send screenshot to see what is going wrong
-            if not getattr(app, "debug_screenshot_sent", False):
-                await send_screenshot(page, app, "DEBUG: Could not find 'Today's SMS Statistics'. Here is what the page looks like.")
-                app.debug_screenshot_sent = True
-
-        all_rows = main_table.locator('tr')
-        total_rows = await all_rows.count()
-
-        print(f"Total rows in main table: {total_rows}", flush=True)
-
-        new_messages_found = 0
-
-        for i in range(total_rows):
-            try:
-                # 🔁 Har iteration pe page fresh re-navigate karo (bug fix)
-                if i > 0:
-                    await page.goto(SMS_URL, timeout=30000, wait_until="domcontentloaded")
-                    await asyncio.sleep(3)
-
-                    # Cloudflare Bypass Logic
-                    try:
-                        content = await page.content()
-                        if "security verification" in content or "Just a moment..." in content:
-                            print("Cloudflare detected inside loop! Trying to bypass...", flush=True)
-                            cf_iframe = page.frame_locator('iframe[src*="challenges"]')
-                            if await cf_iframe.locator('.ctp-checkbox-label').count() > 0:
-                                print("Clicking Cloudflare Checkbox...", flush=True)
-                                await cf_iframe.locator('.ctp-checkbox-label').click(timeout=5000)
-                            await asyncio.sleep(10)
-                    except Exception as e:
-                        print(f"CF loop Bypass error: {e}")
-                    tables = page.locator('table')
-                    main_table = None
-                    for ti in range(await tables.count()):
-                        tbl = tables.nth(ti)
-                        try:
-                            if "Today's SMS Statistics" in await tbl.inner_text():
-                                main_table = tbl
-                                break
-                        except Exception:
-                            continue
-                    if not main_table:
-                        main_table = tables.first
-                    all_rows = main_table.locator('tr')
-
-                row = all_rows.nth(i)
-                cells = row.locator('td')
-                cell_count = await cells.count()
-
-                if cell_count < 7:
-                    continue
-
-                ph = clean_text(await cells.nth(0).inner_text())
-                sender = clean_text(await cells.nth(2).inner_text())
-                msg_count = clean_text(await cells.nth(5).inner_text())
-                details_cell = cells.nth(6)
-
-                if is_header_row(ph):
-                    continue
-
-                if not is_valid_phone(ph):
-                    continue
-
-                print(f"\nRow {i}: Phone={ph}, Sender={sender}", flush=True)
-
-                msg_key = f"v3_{ph}_{sender}_{msg_count}"
-
-                if msg_key in seen_messages:
-                    print(f"  Skip: Already seen", flush=True)
-                    continue
-
-                clicked = await find_and_click_select(details_cell)
-
-                if not clicked:
-                    print(f"  Click nahi ho paya, skip", flush=True)
-                    continue
-
-                dt, full_msg = await get_sms_details(page)
-
-                if not full_msg:
-                    print(f"  Message nahi mila, skip", flush=True)
-                    continue
-
-                seen_messages.add(msg_key)
-                new_messages_found += 1
-
-                otp = extract_otp(full_msg)
-                if otp:
-                    print(f"  OTP found: {otp}", flush=True)
-
-                # 🎯 NEW: Compact card format mein bhejo (image 1 style)
-                await send_card(OTP_CHANNEL_ID, app, ph, sender, dt, otp, full_msg, msg_key)
-                await send_card(OTP_GROUP_ID, app, ph, sender, dt, otp, full_msg, msg_key)
-                print(f"  ✅ Card sent to Telegram!", flush=True)
-
-            except Exception as row_err:
-                print(f"Row {i} error: {row_err}", flush=True)
-                continue
-
-        print(f"\n📊 This cycle: {new_messages_found} new messages found", flush=True)
-        print(f"📊 Total seen: {len(seen_messages)}", flush=True)
-
-        if len(seen_messages) > 500:
-            seen_messages = set(list(seen_messages)[-250:])
-            print(f"🧹 Cleaned seen_messages, now: {len(seen_messages)}", flush=True)
-
+        u = page.locator('input[type="text"]').first
+        await u.click()
+        await asyncio.sleep(0.2)
+        await u.fill(PANEL_USER)
+        await asyncio.sleep(0.3)
+        
+        p = page.locator('input[type="password"]').first
+        await p.click()
+        await asyncio.sleep(0.2)
+        await p.fill(PANEL_PASS)
+        await asyncio.sleep(0.3)
+        
+        await page.locator('button, input[type="submit"]').first.click()
+        await asyncio.sleep(2)
+        
+        await save_cookies()
+        print("✅ Login OK", flush=True)
         return True
-
     except Exception as e:
-        print(f"Check SMS error: {e}", flush=True)
+        print(f"❌ Login failed: {e}", flush=True)
         return False
 
-# ========== MAIN ==========
+async def check_login():
+    """Returns: True=logged_in, False=need_login, None=page_crashed"""
+    try:
+        await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+        await asyncio.sleep(0.6)
+        content = await page.content()
+        if 'Please enter your login details' in content:
+            return False
+        return True
+    except Exception as e:
+        if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
+            return None  # Page crashed — need full restart
+        return False
+
+# ========== MAIN POLL — CRASH SAFE ✅ ==========
+async def run_bot():
+    global seen_messages
+    
+    await start_browser()
+    
+    # Initial login
+    status = await check_login()
+    if status == False:
+        await do_login()
+    elif status is None:
+        await start_browser()
+        await do_login()
+    
+    print(f"✅ BOT ONLINE — Har {POLL_INTERVAL}s check ⚡", flush=True)
+    await safe_send(bot_ref, ADMIN_ID, f"✅ Bot chalu — har {POLL_INTERVAL}s mein check karega!")
+    
+    err_count = 0
+    crash_count = 0
+    
+    while True:
+        try:
+            # Check if page is alive
+            try:
+                await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+                await asyncio.sleep(0.2)
+            except Exception as e:
+                if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
+                    crash_count += 1
+                    print(f"💥 Page crashed ({crash_count}) — restarting browser...", flush=True)
+                    await start_browser()
+                    await do_login()
+                    if crash_count >= 3:
+                        await admin_alert(bot_ref, f"⚠️ Browser baar-baar crash ho raha ({crash_count} baar) — recover ho raha hai")
+                        crash_count = 0
+                    await asyncio.sleep(5)
+                    continue
+                raise
+            
+            crash_count = 0  # Reset — sab theek hai
+            
+            content = await page.content()
+            if 'Please enter your login details' in content:
+                print("🔄 Session expired — re-login", flush=True)
+                ok = await do_login()
+                if not ok:
+                    await asyncio.sleep(5)
+                    continue
+                await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+                await asyncio.sleep(0.5)
+
+            rows = page.locator('table tbody tr')
+            total = await rows.count()
+            print(f"📊 Check: {total} rows", flush=True)
+
+            for i in range(total):
+                row = rows.nth(i)
+                cols = row.locator('td')
+                if await cols.count() < 5: continue
+                num = (await cols.nth(0).inner_text()).strip()
+
+                form = row.locator('form').first
+                clicked = False
+                if await form.count() > 0:
+                    try: await form.click(); clicked = True
+                    except: pass
+                if not clicked:
+                    btn = row.locator('button:has-text("Select"), input[value*="Select"]').first
+                    if await btn.count() > 0:
+                        try: await btn.click(); clicked = True
+                        except: pass
+                if not clicked:
+                    continue
+
+                try:
+                    await page.wait_for_load_state('domcontentloaded', timeout=8000)
+                    await asyncio.sleep(0.3)
+                    detail_rows = page.locator('table tbody tr')
+                    for j in range(await detail_rows.count()):
+                        dcols = detail_rows.nth(j).locator('td')
+                        if await dcols.count() >= 5:
+                            dt = (await dcols.nth(0).inner_text()).strip()
+                            ph = (await dcols.nth(1).inner_text()).strip()
+                            se = (await dcols.nth(2).inner_text()).strip()
+                            ms = (await dcols.nth(-1).inner_text()).strip()
+                            if ms and len(ms) > 3 and dt:
+                                key = f"{dt}|{ph}|{ms[:40]}"
+                                if key not in seen_messages:
+                                    seen_messages.add(key)
+                                    otp = extract_otp(ms)
+                                    masked = mask(ph)
+                                    
+                                    # ----- PREMIUM FORMAT APLIYED -----
+                                    flag, ccode = get_country(ph)
+                                    clean_masked = escape_markdown(masked)
+                                    clean_ccode = escape_markdown(ccode)
+                                    line1 = f"{flag} {clean_ccode} \\| 🟢 {clean_masked} \\#EN"
+                                    
+                                    clean_sender = escape_markdown(se)
+                                    if otp and otp != "N/A":
+                                        clean_otp = escape_markdown(otp)
+                                        line2 = f"🔥 {clean_sender} \\- `{clean_otp}`"
+                                    else:
+                                        line2 = f"🔥 {clean_sender} \\- SMS Received"
+                                        
+                                    message_text = f"{line1}\n{line2}"
+                                    
+                                    CHANNEL_URL = "https://t.me/dolaotp"
+                                    if otp and otp != "N/A":
+                                        otp_btn = InlineKeyboardButton(f"🛡️ {otp}", api_kwargs={'copy_text': {'text': str(otp)}})
+                                    else:
+                                        otp_btn = InlineKeyboardButton("🛡️ SMS", callback_data="ignore")
+
+                                    keyboard = [
+                                        [
+                                            InlineKeyboardButton("🔔 Channel", url=CHANNEL_URL),
+                                            otp_btn
+                                        ],
+                                        [
+                                            InlineKeyboardButton("📞 Get Number", url=CHANNEL_URL)
+                                        ]
+                                    ]
+                                    reply_markup = InlineKeyboardMarkup(keyboard)
+
+                                    await safe_send(bot_ref, CHANNEL_ID, message_text, reply_markup)
+                                    await safe_send(bot_ref, NEW_CHANNEL_ID, message_text, reply_markup)
+                                    await safe_send(bot_ref, PRIVATE_CHANNEL_ID, message_text, reply_markup)
+                                    print(f"✅ SENT: {masked} | {otp}", flush=True)
+                                    # ----------------------------------
+                    await page.go_back()
+                    await page.wait_for_load_state('domcontentloaded', timeout=8000)
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    print(f"Detail err: {e}", flush=True)
+                    try: await page.goto(OTP_SUMMARY_URL, timeout=15000, wait_until='domcontentloaded')
+                    except: pass
+
+            import random
+            if random.random() < 0.15:
+                await save_cookies()
+
+            if len(seen_messages) > 500:
+                seen_messages = set(list(seen_messages)[-250:])
+            err_count = 0
+
+        except Exception as e:
+            err_count += 1
+            print(f"Poll err ({err_count}/5): {e}", flush=True)
+            
+            if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
+                print("💥 Crash detected — full browser restart", flush=True)
+                await start_browser()
+                await do_login()
+            
+            if err_count >= 5:
+                await admin_alert(bot_ref, "⚠️ Network issues — recover ho raha hai")
+                err_count = 0
+                try:
+                    await start_browser()
+                    await do_login()
+                except: pass
+
+        await asyncio.sleep(POLL_INTERVAL)
+
+# ========== COMMANDS ==========
+async def start_cmd(u: Update, c: ContextTypes):
+    await u.message.reply_text(f"✅ Bot chalu hai!\n⏱️ Har {POLL_INTERVAL}s check\n📡 Dono channels pe OTP\n🔁 Repeat nahi hoga\n🔐 Crash auto-recovery ON", parse_mode="Markdown")
+
+async def status_cmd(u: Update, c: ContextTypes):
+    if u.effective_user.id != ADMIN_ID: return
+    await u.message.reply_text(f"✅ Bot Running\n⏱️ Check: {POLL_INTERVAL}s\n🛡️ Crash recovery: ON\n📡 Channels: 2 active\n🖼️ Images blocked (memory save)", parse_mode="Markdown")
+
+async def restart_cmd(u: Update, c: ContextTypes):
+    if u.effective_user.id != ADMIN_ID: return
+    await u.message.reply_text("🔄 Browser restart ho raha hai...")
+    await start_browser()
+    await do_login()
+    await u.message.reply_text("✅ Browser restart + login done!")
+
+async def relogin_cmd(u: Update, c: ContextTypes):
+    if u.effective_user.id != ADMIN_ID: return
+    try: os.remove(cookies_file)
+    except: pass
+    await u.message.reply_text("✅ Cookie delete — auto re-login hoga")
+
 async def main():
-    print("🤖 Bot Starting (v2 - Card Format)...", flush=True)
+    global bot_ref
+    if not BOT_TOKEN or BOT_TOKEN == "TUMHARA_NAYA_TOKEN_YAHAN_DAALO":
+        print("❌ BOT_TOKEN missing ya change nahi kiya!", flush=True); return
 
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("✅ Bot is Active! Login process in progress...")
-
-    async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id == ADMIN_ID:
-            await update.message.reply_text(
-                f"✅ Bot Running\n⏱️ Check every {POLL_INTERVAL}s\n📊 Processed: {len(seen_messages)}"
-            )
-
-    async def reset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        global seen_messages
-        if update.effective_user.id == ADMIN_ID:
-            old_count = len(seen_messages)
-            seen_messages = set()
-            await update.message.reply_text(f"🔄 Seen cache reset! Old: {old_count}, New: 0")
+    app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).build()
+    bot_ref = app.bot
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("reset", reset_cmd))
-    app.add_handler(CallbackQueryHandler(button_callback))  # 🆕 inline buttons ke liye
+    app.add_handler(CommandHandler("restart", restart_cmd))
+    app.add_handler(CommandHandler("relogin", relogin_cmd))
 
     await app.initialize()
     await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
 
-    print("🔒 Cleaning webhook & pending updates...", flush=True)
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.sleep(2)
+    asyncio.create_task(run_bot())
 
-    await app.updater.start_polling(drop_pending_updates=True, allowed_updates=[])
-    print("✅ Telegram Connected & Polling Started!", flush=True)
-
-    while True:
-        login_ok, page = await login_panel(app)
-        if not login_ok or not page:
-            print("🔄 Retry login in 8s...", flush=True)
-            await asyncio.sleep(8)
-            continue
-
-        print("🚀 Monitoring Started!", flush=True)
-
-        while True:
-            check_ok = await check_sms(app, page)
-            if not check_ok:
-                print("🔄 Session lost - Re-logging in...", flush=True)
-                await cleanup_resources(page)
-                break
-            await asyncio.sleep(POLL_INTERVAL)
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Bot Stopped by User", flush=True)
+    try: asyncio.run(main())
+    except KeyboardInterrupt: print("STOPPED", flush=True)
