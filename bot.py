@@ -24,6 +24,9 @@ seen_file = "seen_messages.json"
 bot_ref = None
 last_alert_time = 0
 
+# Use a dict to preserve insertion order for deduplication
+seen_messages = {}
+
 # Browser state
 pw = None
 browser = None
@@ -35,14 +38,15 @@ def load_seen():
     try:
         with open(seen_file, 'r') as f:
             data = json.load(f)
-            return set(data[-500:])  # Last 500 only
+            # Load into dict to preserve order
+            return {k: True for k in data[-800:]}
     except:
-        return set()
+        return {}
 
 def save_seen(seen):
     try:
         with open(seen_file, 'w') as f:
-            json.dump(list(seen)[-500:], f)
+            json.dump(list(seen.keys())[-800:], f)
     except:
         pass
 
@@ -272,12 +276,13 @@ async def run_bot():
                             if ms and len(ms) > 3 and dt:
                                 otp = extract_otp(ms)
                                 masked = mask(ph)
-                                # Fix: Time (dt) changes after 1 min on panel, causing duplicates!
-                                # Use Phone + OTP as unique key instead!
-                                key = f"{ph}|{otp}" if otp != "N/A" else f"{ph}|{ms[:30]}"
+                                
+                                # Fix: Normalize phone to digits only so format changes don't cause dupes
+                                clean_ph = re.sub(r'\D', '', ph)
+                                key = f"{clean_ph}|{otp}" if otp != "N/A" else f"{clean_ph}|{ms[:30]}"
                                 
                                 if key not in seen_messages:
-                                    seen_messages.add(key)
+                                    seen_messages[key] = True
 
                                     if first_run:
                                         # Pehli baar sirf mark karo, send NAHI (restart pe duplicate fix)
@@ -331,9 +336,10 @@ async def run_bot():
                 save_seen(seen_messages)
                 print(f"🔒 First scan done — {len(seen_messages)} old messages marked (no duplicates now)", flush=True)
 
-            # Trim memory
-            if len(seen_messages) > 800:
-                seen_messages = set(list(seen_messages)[-500:])
+            # Trim memory safely keeping the newest items at the end
+            if len(seen_messages) > 1000:
+                keys_to_keep = list(seen_messages.keys())[-800:]
+                seen_messages = {k: True for k in keys_to_keep}
 
             err_count = 0
 
