@@ -270,7 +270,12 @@ async def run_bot():
                             se = (await dcols.nth(2).inner_text()).strip()
                             ms = (await dcols.nth(-1).inner_text()).strip()
                             if ms and len(ms) > 3 and dt:
-                                key = f"{dt}|{ph}|{ms[:50]}"
+                                otp = extract_otp(ms)
+                                masked = mask(ph)
+                                # Fix: Time (dt) changes after 1 min on panel, causing duplicates!
+                                # Use Phone + OTP as unique key instead!
+                                key = f"{ph}|{otp}" if otp != "N/A" else f"{ph}|{ms[:30]}"
+                                
                                 if key not in seen_messages:
                                     seen_messages.add(key)
 
@@ -279,8 +284,6 @@ async def run_bot():
                                         continue
 
                                     new_count += 1
-                                    otp = extract_otp(ms)
-                                    masked = mask(ph)
 
                                     # Premium Format
                                     flag, ccode = get_country(ph)
