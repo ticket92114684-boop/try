@@ -3,10 +3,14 @@ import json
 import os
 import re
 import time
+import hashlib
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
 from playwright.async_api import async_playwright
+
+# ========== VERSION — check logs to confirm which code is running ==========
+VERSION = "v3.0"
 
 BOT_TOKEN       = "8885622806:AAEzNbdnJJWd5AGC6pC8LUBcOs2SRzKXlds"
 CHANNEL_ID      = os.getenv("CHANNEL_ID", "-1004427004477")
@@ -19,13 +23,14 @@ LOGIN_URL       = "https://mysmsportal.com/index.php"
 OTP_SUMMARY_URL = "https://mysmsportal.com/index.php?opt=shw_sts_today"
 POLL_INTERVAL   = int(os.getenv("POLL_INTERVAL", "2"))
 
+# ========== LINKS ==========
+CHANNEL_URL    = "https://t.me/dolaotp"
+GET_NUMBER_URL = "https://t.me/allnumbersfree"
+
 cookies_file = "panel_cookies.json"
 seen_file = "seen_messages.json"
 bot_ref = None
 last_alert_time = 0
-
-# Use a dict to preserve insertion order for deduplication
-seen_messages = {}
 
 # Browser state
 pw = None
@@ -33,12 +38,24 @@ browser = None
 context = None
 page = None
 
-# ========== SEEN MESSAGES — FILE BASED (no duplicates even after restart) ==========
+# ========== BULLETPROOF DEDUP ==========
+# Key = hash of (digits-only-phone + sender + first 4-8 digit code in message)
+# This NEVER changes no matter what the panel does to timestamps/formatting
+
+def make_dedup_key(ph, sender, msg_text):
+    """Create a stable dedup key that won't change even if panel updates timestamps"""
+    digits_ph = re.sub(r'\D', '', str(ph))
+    # Extract ALL 4-8 digit numbers from message to use as fingerprint
+    all_codes = re.findall(r'\b(\d{4,8})\b', str(msg_text))
+    codes_str = "|".join(sorted(all_codes)) if all_codes else ""
+    # Use sender + phone + codes as the unique fingerprint
+    raw = f"{digits_ph}:{sender}:{codes_str}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
 def load_seen():
     try:
         with open(seen_file, 'r') as f:
             data = json.load(f)
-            # Load into dict to preserve order
             return {k: True for k in data[-800:]}
     except:
         return {}
@@ -52,7 +69,7 @@ def save_seen(seen):
 
 seen_messages = load_seen()
 
-# ========== PREMIUM FORMAT HELPERS ==========
+# ========== HELPERS ==========
 def escape_markdown(text):
     escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in escape_chars:
@@ -75,7 +92,6 @@ def get_country(ph):
     return "🌐", "+???"
 
 async def safe_send(bot, chat_id, text, reply_markup=None):
-    """Single attempt — no retries to avoid delay"""
     try:
         if reply_markup:
             await bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=reply_markup, read_timeout=10, write_timeout=10)
@@ -87,7 +103,6 @@ async def safe_send(bot, chat_id, text, reply_markup=None):
         return False
 
 async def send_to_all_channels(text, reply_markup):
-    """Send to all 3 channels simultaneously — no waiting one by one"""
     tasks = [
         safe_send(bot_ref, CHANNEL_ID, text, reply_markup),
         safe_send(bot_ref, NEW_CHANNEL_ID, text, reply_markup),
@@ -111,7 +126,7 @@ def extract_otp(t):
     m = re.search(r'\b(\d{4,8})\b', t)
     return m.group(1) if m else "N/A"
 
-# ========== BROWSER MANAGEMENT ==========
+# ========== BROWSER ==========
 async def start_browser():
     global pw, browser, context, page
     try:
@@ -182,13 +197,12 @@ async def do_login():
         print(f"❌ Login failed: {e}", flush=True)
         return False
 
-# ========== ULTRA FAST POLL LOOP ✅ ==========
+# ========== MAIN LOOP ==========
 async def run_bot():
     global seen_messages
 
     await start_browser()
 
-    # Initial login check
     try:
         await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
         await asyncio.sleep(0.5)
@@ -200,30 +214,30 @@ async def run_bot():
         await do_login()
         await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
 
-    print(f"✅ BOT ONLINE — Har {POLL_INTERVAL}s check ⚡", flush=True)
-    await safe_send(bot_ref, ADMIN_ID, f"✅ Bot chalu — har {POLL_INTERVAL}s mein check karega!")
+    print(f"✅ BOT {VERSION} ONLINE — Har {POLL_INTERVAL}s check ⚡", flush=True)
+    await safe_send(bot_ref, ADMIN_ID, f"✅ Bot {VERSION} chalu — har {POLL_INTERVAL}s check!")
 
     err_count = 0
     crash_count = 0
-    first_run = True  # Pehli baar sirf scan karo, send mat karo (restart duplicate fix)
+    first_run = True
+    visited_numbers = set()  # Track which numbers we already clicked this cycle
 
     while True:
         try:
-            # ⚡ FAST: page.reload() instead of full goto() — 2x faster
             try:
                 if first_run:
-                    pass  # Already on the page from login
+                    pass
                 else:
                     await page.reload(timeout=15000, wait_until='domcontentloaded')
             except Exception as e:
                 if 'crashed' in str(e).lower() or 'closed' in str(e).lower():
                     crash_count += 1
-                    print(f"💥 Crash ({crash_count}) — restart...", flush=True)
+                    print(f"💥 Crash ({crash_count})", flush=True)
                     await start_browser()
                     await do_login()
                     await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
                     if crash_count >= 3:
-                        await admin_alert(bot_ref, f"⚠️ Browser crash ({crash_count}x)")
+                        await admin_alert(bot_ref, f"⚠️ Crash ({crash_count}x)")
                         crash_count = 0
                     continue
                 raise
@@ -232,7 +246,7 @@ async def run_bot():
 
             content = await page.content()
             if 'Please enter your login details' in content:
-                print("🔄 Session expired — re-login", flush=True)
+                print("🔄 Re-login", flush=True)
                 if not await do_login():
                     await asyncio.sleep(3)
                     continue
@@ -242,13 +256,31 @@ async def run_bot():
             total = await rows.count()
             print(f"📊 {total} rows", flush=True)
 
+            # Collect all summary numbers FIRST, then click only unique ones
+            summary_numbers = []
             for i in range(total):
                 row = rows.nth(i)
                 cols = row.locator('td')
                 if await cols.count() < 5:
                     continue
+                num = (await cols.nth(0).inner_text()).strip()
+                num_digits = re.sub(r'\D', '', num)
+                summary_numbers.append((i, num, num_digits))
 
-                # Click into detail page
+            visited_numbers.clear()
+
+            for idx, num, num_digits in summary_numbers:
+                # SKIP if we already visited this number in this cycle
+                if num_digits in visited_numbers:
+                    continue
+                visited_numbers.add(num_digits)
+
+                # Re-locate rows fresh each time (page might have changed after go_back)
+                rows = page.locator('table tbody tr')
+                if idx >= await rows.count():
+                    continue
+                row = rows.nth(idx)
+
                 form = row.locator('form').first
                 clicked = False
                 if await form.count() > 0:
@@ -274,23 +306,19 @@ async def run_bot():
                             se = (await dcols.nth(2).inner_text()).strip()
                             ms = (await dcols.nth(-1).inner_text()).strip()
                             if ms and len(ms) > 3 and dt:
-                                otp = extract_otp(ms)
-                                masked = mask(ph)
-                                
-                                # Fix: Normalize phone to digits only so format changes don't cause dupes
-                                clean_ph = re.sub(r'\D', '', ph)
-                                key = f"{clean_ph}|{otp}" if otp != "N/A" else f"{clean_ph}|{ms[:30]}"
-                                
+                                # BULLETPROOF dedup key — immune to timestamp changes
+                                key = make_dedup_key(ph, se, ms)
+
                                 if key not in seen_messages:
                                     seen_messages[key] = True
 
                                     if first_run:
-                                        # Pehli baar sirf mark karo, send NAHI (restart pe duplicate fix)
                                         continue
 
                                     new_count += 1
+                                    otp = extract_otp(ms)
+                                    masked = mask(ph)
 
-                                    # Premium Format
                                     flag, ccode = get_country(ph)
                                     clean_masked = escape_markdown(masked)
                                     clean_ccode = escape_markdown(ccode)
@@ -299,15 +327,12 @@ async def run_bot():
                                     clean_sender = escape_markdown(se)
                                     if otp and otp != "N/A":
                                         clean_otp = escape_markdown(otp)
-                                        line2 = f"🔥 {clean_sender} \\- `{clean_otp}` ⚡"
+                                        line2 = f"🔥 {clean_sender} \\- `{clean_otp}`"
                                     else:
-                                        line2 = f"🔥 {clean_sender} \\- SMS Received ⚡"
+                                        line2 = f"🔥 {clean_sender} \\- SMS Received"
 
                                     message_text = f"{line1}\n{line2}"
 
-                                    CHANNEL_URL = "https://t.me/dolaotp"
-                                    GET_NUMBER_URL = "https://t.me/allnumbersfree"
-                                    
                                     if otp and otp != "N/A":
                                         otp_btn = InlineKeyboardButton(f"🛡️ {otp}", api_kwargs={'copy_text': {'text': str(otp)}})
                                     else:
@@ -318,16 +343,14 @@ async def run_bot():
                                     ]
                                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                                    # ⚡ Send to ALL channels at once (parallel — no waiting)
                                     await send_to_all_channels(message_text, reply_markup)
-                                    print(f"✅ SENT: {masked} | {otp}", flush=True)
+                                    print(f"✅ SENT: {masked} | {otp} [key={key[:8]}]", flush=True)
 
                     if new_count > 0:
-                        save_seen(seen_messages)  # Save to file after new messages
+                        save_seen(seen_messages)
 
-                    # Go back to summary for next row
-                    await page.go_back()
-                    await page.wait_for_load_state('domcontentloaded', timeout=8000)
+                    # Go back to summary — use goto instead of go_back for reliability
+                    await page.goto(OTP_SUMMARY_URL, timeout=15000, wait_until='domcontentloaded')
                 except Exception as e:
                     print(f"Detail err: {e}", flush=True)
                     try: await page.goto(OTP_SUMMARY_URL, timeout=15000, wait_until='domcontentloaded')
@@ -336,9 +359,8 @@ async def run_bot():
             if first_run:
                 first_run = False
                 save_seen(seen_messages)
-                print(f"🔒 First scan done — {len(seen_messages)} old messages marked (no duplicates now)", flush=True)
+                print(f"🔒 First scan done — {len(seen_messages)} marked", flush=True)
 
-            # Trim memory safely keeping the newest items at the end
             if len(seen_messages) > 1000:
                 keys_to_keep = list(seen_messages.keys())[-800:]
                 seen_messages = {k: True for k in keys_to_keep}
@@ -373,8 +395,8 @@ async def main():
 
     await app.initialize()
     await app.start()
-    
-    print("✅ Bot is running in SEND-ONLY mode (Conflict error is impossible now!)", flush=True)
+
+    print(f"✅ Bot {VERSION} SEND-ONLY mode", flush=True)
 
     asyncio.create_task(run_bot())
     await asyncio.Event().wait()
