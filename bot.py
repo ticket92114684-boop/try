@@ -221,6 +221,7 @@ async def run_bot():
     crash_count = 0
     first_run = True
     visited_numbers = set()  # Track which numbers we already clicked this cycle
+    loop_count = 0
 
     while True:
         try:
@@ -382,6 +383,15 @@ async def run_bot():
                 await do_login()
                 try: await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
                 except: pass
+
+        loop_count += 1
+        if loop_count >= 200:  # Restart browser every ~10 minutes to prevent RAM Full (OOM)
+            loop_count = 0
+            print("🧹 Cleaning memory (Prevent Crash)...", flush=True)
+            await start_browser()
+            await do_login()
+            try: await page.goto(OTP_SUMMARY_URL, timeout=20000, wait_until='domcontentloaded')
+            except: pass
 
         await asyncio.sleep(POLL_INTERVAL)
 
