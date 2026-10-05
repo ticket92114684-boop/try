@@ -24,7 +24,7 @@ OTP_SUMMARY_URL = "https://mysmsportal.com/index.php?opt=shw_sts_today"
 POLL_INTERVAL   = int(os.getenv("POLL_INTERVAL", "2"))
 
 # ========== LINKS ==========
-CHANNEL_URL    = "https://t.me/dolaotp"
+CHANNEL_URL    = "https://t.me/allnumbersfree"
 GET_NUMBER_URL = "https://t.me/allnumbersfree"
 
 cookies_file = "panel_cookies.json"
@@ -385,6 +385,19 @@ async def run_bot():
 
         await asyncio.sleep(POLL_INTERVAL)
 
+async def web_server():
+    from aiohttp import web
+    async def handle(request):
+        return web.Response(text=f"Bot {VERSION} is running!")
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv('PORT', 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌐 Web server started on port {port}", flush=True)
+
 async def main():
     global bot_ref
     if not BOT_TOKEN:
@@ -397,6 +410,9 @@ async def main():
     await app.start()
 
     print(f"✅ Bot {VERSION} SEND-ONLY mode", flush=True)
+
+    # Start the background web server for Render health checks
+    asyncio.create_task(web_server())
 
     asyncio.create_task(run_bot())
     await asyncio.Event().wait()
