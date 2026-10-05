@@ -390,8 +390,18 @@ def start_simple_server():
     import socketserver
     import os
     port = int(os.getenv('PORT', 8080))
-    Handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("", port), Handler) as httpd:
+    
+    class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"OK")
+            
+        def log_message(self, format, *args):
+            pass # Disable logging to keep console clean
+
+    with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
         print(f"🌐 Web server started on port {port}", flush=True)
         httpd.serve_forever()
 
