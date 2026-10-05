@@ -401,6 +401,7 @@ def start_simple_server():
         def log_message(self, format, *args):
             pass # Disable logging to keep console clean
 
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
         print(f"🌐 Web server started on port {port}", flush=True)
         httpd.serve_forever()
