@@ -136,6 +136,13 @@ async def start_browser():
         if pw: await pw.stop()
     except: pass
 
+    # 🛑 FORCE KILL ANY ORPHANED PROCESSES TO FREE RAM!
+    import os
+    os.system("pkill -9 -f chrome")
+    os.system("pkill -9 -f chromium")
+    os.system("pkill -9 -f playwright")
+    await asyncio.sleep(2)
+
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(
         headless=True,
