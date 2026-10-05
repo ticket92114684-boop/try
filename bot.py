@@ -385,18 +385,19 @@ async def run_bot():
 
         await asyncio.sleep(POLL_INTERVAL)
 
-async def web_server():
-    from aiohttp import web
-    async def handle(request):
-        return web.Response(text=f"Bot {VERSION} is running!")
-    app = web.Application()
-    app.router.add_get('/', handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
+def start_simple_server():
+    import http.server
+    import socketserver
+    import os
     port = int(os.getenv('PORT', 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"🌐 Web server started on port {port}", flush=True)
+    Handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), Handler) as httpd:
+        print(f"🌐 Web server started on port {port}", flush=True)
+        httpd.serve_forever()
+
+async def web_server():
+    # Run simple server in a separate thread so it doesn't block asyncio
+    await asyncio.to_thread(start_simple_server)
 
 async def main():
     global bot_ref
